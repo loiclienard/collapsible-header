@@ -32,5 +32,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'visible',             // let it overflow for debugging
   },
- 
 });
