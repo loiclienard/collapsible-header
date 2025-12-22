@@ -1,14 +1,10 @@
 import React, { useMemo } from 'react';
-import {
-  FlatList,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
+  withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -17,15 +13,20 @@ const AnimatedFlatList = Animated.createAnimatedComponent(
   FlatList<string>
 );
 
+// CONFIGURABLE THRESHOLDS (in px of finger movement during one drag)
+const COLLAPSE_THRESHOLD = 5; // scroll down by at least this
+const EXPAND_THRESHOLD   = 5; // scroll up by at least this
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const HEADER_TOTAL_HEIGHT = BASE_HEADER_HEIGHT + insets.top;
 
   // 0 = fully visible; HEADER_TOTAL_HEIGHT = fully collapsed
   const headerOffset = useSharedValue(0);
-  // Virtual scroll of the list (0 = top)
-  const listScrollY = useSharedValue(0);
-  const lastNativeY = useSharedValue(0);
+
+  // Track scroll movement during the current drag
+  const dragDeltaY = useSharedValue(0); // positive = down, negative = up
+  const lastY = useSharedValue(0);
 
   const data = useMemo(
     () => Array.from({ length: 60 }, (_, i) => `Item ${i + 1}`),
@@ -37,76 +38,68 @@ export default function HomeScreen() {
     paddingTop: insets.top,
   }));
 
+  const snapHeader = (force?: 'collapse' | 'expand') => {
+    'worklet';
+    let target: number;
+
+    if (force === 'collapse') {
+      target = HEADER_TOTAL_HEIGHT;
+    } else if (force === 'expand') {
+      target = 0;
+    } else {
+      // default behavior: use middle point
+      const mid = HEADER_TOTAL_HEIGHT / 2;
+      target = headerOffset.value < mid ? 0 : HEADER_TOTAL_HEIGHT;
+    }
+
+    headerOffset.value = withTiming(target, { duration: 180 });
+  };
+
   const onScroll = useAnimatedScrollHandler({
     onBeginDrag: (event) => {
-      lastNativeY.value = event.contentOffset.y;
+      lastY.value = event.contentOffset.y;
+      dragDeltaY.value = 0; // reset per-gesture delta
     },
+
     onScroll: (event) => {
       const y = event.contentOffset.y;
-      const dy = y - lastNativeY.value;
-      lastNativeY.value = y;
+      const dy = y - lastY.value;
+      lastY.value = y;
 
-      if (dy === 0) return;
+      // accumulate drag distance for this gesture
+      dragDeltaY.value += dy;
 
-      if (dy > 0) {
-        // ===== SCROLLING DOWN =====
-        // Collapse header first
-        if (headerOffset.value < HEADER_TOTAL_HEIGHT) {
-          const headerCanCollapse =
-            HEADER_TOTAL_HEIGHT - headerOffset.value;
-          const usedForHeader = Math.min(dy, headerCanCollapse);
-          headerOffset.value += usedForHeader;
+      // Move header with scroll
+      headerOffset.value = Math.min(
+        HEADER_TOTAL_HEIGHT,
+        Math.max(0, headerOffset.value + dy)
+      );
+    },
 
-          const remaining = dy - usedForHeader;
-          if (remaining > 0) {
-            // Then scroll list, but don't allow negative (not relevant here, but keep consistent)
-            listScrollY.value = Math.max(
-              0,
-              listScrollY.value + remaining
-            );
-          }
-        } else {
-          listScrollY.value = Math.max(0, listScrollY.value + dy);
-        }
+    onEndDrag: () => {
+      // Decide based on dragDeltaY
+      const delta = dragDeltaY.value;
+
+      if (delta >= COLLAPSE_THRESHOLD) {
+        // user dragged down enough -> force collapse
+        snapHeader('collapse');
+      } else if (delta <= -EXPAND_THRESHOLD) {
+        // user dragged up enough -> force expand
+        snapHeader('expand');
       } else {
-        // ===== SCROLLING UP =====
-        const absDy = -dy;
-
-        // 1) Expand header first
-        if (headerOffset.value > 0) {
-          const headerCanExpand = headerOffset.value;
-          const usedForHeaderUp = Math.min(headerCanExpand, absDy);
-          headerOffset.value -= usedForHeaderUp;
-
-          const remainingUp = absDy - usedForHeaderUp;
-          if (remainingUp > 0) {
-            // 2) Then move list up, but clamp at 0
-            const listCanRewind = listScrollY.value;
-            const usedForList = Math.min(listCanRewind, remainingUp);
-            listScrollY.value = Math.max(
-              0,
-              listScrollY.value - usedForList
-            );
-            // Any leftover "up" beyond this is ignored, so you
-            // can't go above the first item.
-          }
-        } else {
-          // Header already fully expanded; only list moves up, clamped at 0
-          const listCanRewind = listScrollY.value;
-          const usedForList = Math.min(listCanRewind, absDy);
-          listScrollY.value = Math.max(
-            0,
-            listScrollY.value - usedForList
-          );
-          // If listScrollY was already 0, nothing happens → no overscroll.
-        }
+        // not enough movement -> fallback to midpoint logic
+        snapHeader();
       }
+    },
+
+    onMomentumEnd: () => {
+      // Optional: after a fling, you can also just rely on midpoint
+      snapHeader();
     },
   });
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <Animated.View
         style={[
           styles.headerContainer,
@@ -115,36 +108,29 @@ export default function HomeScreen() {
         ]}
       >
         <View style={styles.headerInner}>
-          <Text style={styles.headerTitle}>Collapsible Header</Text>
+          <Text style={styles.headerTitle}>Snapping Header</Text>
           <Text style={styles.headerSubtitle}>
-            Scroll down: collapse header, then list. Up: expand header first.
+            Uses collapse/expand thresholds on release.
           </Text>
         </View>
       </Animated.View>
 
-      {/* List (always fills space) */}
-      <View style={styles.listWrapper}>
-        <AnimatedFlatList
-          data={data}
-          keyExtractor={(item) => item}
-          scrollEventThrottle={16}
-          onScroll={onScroll}
-          style={styles.list}
-          // Header height as top padding so the first item appears below header
-          contentContainerStyle={[
-            styles.listContent,
-            { paddingTop: HEADER_TOTAL_HEIGHT },
-          ]}
-          renderItem={({ item }) => (
-            <View style={styles.item}>
-              <Text>{item}</Text>
-            </View>
-          )}
-          // Optional: disable bounce on iOS if you want absolutely no elastic overscroll
-          bounces={false}
-          alwaysBounceVertical={false}
-        />
-      </View>
+      <AnimatedFlatList
+        data={data}
+        keyExtractor={(item) => item}
+        scrollEventThrottle={16}
+        onScroll={onScroll}
+        contentContainerStyle={{
+          paddingTop: HEADER_TOTAL_HEIGHT,
+          paddingBottom: 24,
+        }}
+        renderItem={({ item }) => (
+          <View style={styles.item}>
+            <Text>{item}</Text>
+          </View>
+        )}
+        bounces={false}
+      />
     </View>
   );
 }
@@ -173,15 +159,6 @@ const styles = StyleSheet.create({
     color: 'white',
     opacity: 0.8,
     marginTop: 4,
-  },
-  listWrapper: {
-    flex: 1,
-  },
-  list: {
-    flex: 1,
-  },
-  listContent: {
-    paddingBottom: 24,
   },
   item: {
     paddingVertical: 16,
