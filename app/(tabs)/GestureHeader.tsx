@@ -1,4 +1,5 @@
 // HomeScreen.tsx
+
 import HeaderScrollLayout from '@/components/header/reanimated-gesture-scroll-layout';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -12,28 +13,21 @@ export default function ReanimatedHeader() {
     []
   );
 
-  const renderItem = ({ item }: { item: string }) => {
-    return (
-      <View style={styles.item}>
-        <Text>{item}</Text>
-    </View>)
-  };
 
   return (
     <HeaderScrollLayout
-      title="Header"
-      subtitle="Scrollable content below"
-      renderContent={({ listRef, internalOnScroll }) => (
-        <Animated.FlatList
-          ref={listRef}
-          data={data}
-          keyExtractor={item => item}
-          renderItem={renderItem}
+      renderContent={({ scrollableRef, onScroll }) => (
+        <Animated.ScrollView
+          ref={scrollableRef}
           scrollEventThrottle={16}
-          onScroll={internalOnScroll}
-          // normal momentum etc.
-          contentContainerStyle={{ paddingBottom: 24 }}
-        />
+          onScroll={onScroll}
+        >
+          {data.map((item) => (
+            <View key={item} style={styles.item}>
+              <Text>{item}</Text>
+            </View>
+          ))}
+        </Animated.ScrollView>
   )}
 />
   );

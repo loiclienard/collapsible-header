@@ -26,8 +26,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // --- Types ------------------------------------------------
 
 type RenderContentArgs = {
-  listRef: React.RefObject<Animated.ScrollView | Animated.FlatList<any>>;
-  internalOnScroll: (e: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  scrollableRef: AnimatedRef<Animated.ScrollView>;
+  onScroll: (e: NativeSyntheticEvent<NativeScrollEvent>) => void;
 };
 
 type RenderContent = (args: RenderContentArgs) => ReactNode;
@@ -67,7 +67,7 @@ export default function HeaderScrollLayout({
   const headerHeight = useSharedValue(0);
   const [measuredHeight, setMeasuredHeight] = useState(0);
 
-  const listRef = useAnimatedRef<Animated.ScrollView | Animated.FlatList<any>>();
+  const scrollableRef = useAnimatedRef<Animated.ScrollView>();
 
   // list offset we track
   const contentOffsetY = useSharedValue(0);
@@ -125,26 +125,26 @@ export default function HeaderScrollLayout({
     else if (force === 'expand') target = 0;
     else target = headerProgress.value < 0.5 ? 0 : 1;
 
-    runOnJS(jsLog)('[snapHeader]', { from: headerProgress.value, to: target });
+    runOnJS(jsLog)('[iOS snapHeader]', { from: headerProgress.value, to: target });
 
     headerProgress.value = withTiming(target, { duration: 200 });
   };
 
   // --- Internal onScroll for list ------------------------
 
-  const internalOnScroll = useAnimatedScrollHandler<NativeScrollEvent>({
+  const onScroll = useAnimatedScrollHandler<NativeScrollEvent>({
     onBeginDrag: (e) => {
-      runOnJS(jsLog)('[list] onBeginDrag', e.contentOffset.y);
+      runOnJS(jsLog)('[iOS list] onBeginDrag', e.contentOffset.y);
     },
     onScroll: (event) => {
       contentOffsetY.value = event.contentOffset.y;
-      runOnJS(jsLog)('[list] onScroll', {
+      runOnJS(jsLog)('[iOS list] onScroll', {
         y: event.contentOffset.y,
         headerProgress: headerProgress.value,
       });
     },
     onEndDrag: () => {
-      runOnJS(jsLog)('[list] onEndDrag', null);
+      runOnJS(jsLog)('[iOS list] onEndDrag', null);
     },
   });
 
@@ -156,7 +156,7 @@ export default function HeaderScrollLayout({
       'worklet';
       dragDeltaY.value = 0;
       lastGestureDy.value = 0;
-      runOnJS(jsLog)('[pan] onBegin', {
+      runOnJS(jsLog)('[iOS pan] onBegin', {
         headerProgress: headerProgress.value,
         offsetY: contentOffsetY.value,
       });
@@ -165,7 +165,7 @@ export default function HeaderScrollLayout({
       'worklet';
       const h = headerHeight.value;
       if (h <= 0) {
-        runOnJS(jsLog)('[pan] onUpdate - no header height', null);
+        runOnJS(jsLog)('[iOS pan] onUpdate - no header height', null);
         return;
       }
 
@@ -181,7 +181,7 @@ export default function HeaderScrollLayout({
       const expanding = dy < 0;
       const atTop = contentOffsetY.value <= TOP_EPSILON;
 
-      runOnJS(jsLog)('[pan] onUpdate/raw', {
+      runOnJS(jsLog)('[iOS pan] onUpdate/raw', {
         translationY: event.translationY,
         totalDy,
         stepDy: dy,
@@ -194,11 +194,11 @@ export default function HeaderScrollLayout({
 
       // If list is not at top and header fully collapsed/expanded, we let list handle it.
       if (!atTop && collapsing && headerProgress.value >= 1) {
-        runOnJS(jsLog)('[pan] ignore - deep scroll, header collapsed', null);
+        runOnJS(jsLog)('[iOS pan] ignore - deep scroll, header collapsed', null);
         return;
       }
       if (!atTop && expanding && headerProgress.value <= 0) {
-        runOnJS(jsLog)('[pan] ignore - deep scroll, header expanded', null);
+        runOnJS(jsLog)('[iOS pan] ignore - deep scroll, header expanded', null);
         return;
       }
 
@@ -211,7 +211,7 @@ export default function HeaderScrollLayout({
           headerProgress.value += useForHeader / h;
           dy -= useForHeader;
 
-          runOnJS(jsLog)('[pan] collapse header', {
+          runOnJS(jsLog)('[iOS pan] collapse header', {
             useForHeader,
             newHeaderProgress: headerProgress.value,
             leftoverDy: dy,
@@ -221,9 +221,9 @@ export default function HeaderScrollLayout({
           if (contentOffsetY.value > 0) {
             const newY = Math.max(0, contentOffsetY.value - useForHeader);
             contentOffsetY.value = newY;
-            scrollTo(listRef, 0, newY, false);
+            scrollTo(scrollableRef, 0, newY, false);
           } else {
-            scrollTo(listRef, 0, 0, false);
+            scrollTo(scrollableRef, 0, 0, false);
           }
         }
       }
@@ -239,7 +239,7 @@ if (expanding && headerProgress.value > 0) {
 
     const beforeOffset = contentOffsetY.value;
 
-    runOnJS(jsLog)('[pan] expand header', {
+    runOnJS(jsLog)('[iOS pan] expand header', {
       useForHeader,
       newHeaderProgress: headerProgress.value,
       leftoverDy: dy,
@@ -251,15 +251,16 @@ if (expanding && headerProgress.value > 0) {
     // so the items appear stuck under the finger.
 
     if (beforeOffset > 0) {
-      // We're not at the top yet: let the list move down by -useForHeader
-      // (since useForHeader is negative, -useForHeader is positive)
-      const newY = beforeOffset - useForHeader; // subtract negative => add
+      // When header expands (useForHeader is negative), we need to scroll the list
+      // in the opposite direction to keep content stable under the finger.
+      // Since useForHeader is negative, adding it reduces the scroll offset.
+      const newY = Math.max(0, beforeOffset + useForHeader);
       contentOffsetY.value = newY;
-      scrollTo(listRef, 0, newY, false);
+      scrollTo(scrollableRef, 0, newY, false);
     } else {
       // At or near top: clamp to 0 so we don't see jitter
       contentOffsetY.value = 0;
-      scrollTo(listRef, 0, 0, false);
+      scrollTo(scrollableRef, 0, 0, false);
     }
   }
 }
@@ -267,7 +268,7 @@ if (expanding && headerProgress.value > 0) {
     .onEnd(() => {
       'worklet';
       const delta = dragDeltaY.value;
-      runOnJS(jsLog)('[pan] onEnd', {
+      runOnJS(jsLog)('[iOS pan] onEnd', {
         delta,
         headerProgress: headerProgress.value,
         offsetY: contentOffsetY.value,
@@ -309,8 +310,8 @@ if (expanding && headerProgress.value > 0) {
           {measuredHeight > 0 && (
             <Animated.View style={[styles.contentWrapper, contentWrapperStyle]}>
               {renderContent({
-                listRef,
-                internalOnScroll: internalOnScroll as any,
+                scrollableRef,
+                onScroll: onScroll as any,
               })}
             </Animated.View>
           )}
