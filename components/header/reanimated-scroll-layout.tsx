@@ -38,8 +38,8 @@ const TOP_EPSILON = 4;
 export default function HeaderScrollLayout({
   renderContent,
   overlap = 12,
-  collapseThreshold = 5,
-  expandThreshold = 5,
+  collapseThreshold = 3,
+  expandThreshold = 3,
   title = 'Header',
   subtitle = 'Scrollable content below',
 }: Props) {
@@ -48,6 +48,8 @@ export default function HeaderScrollLayout({
   // 0 = expanded, 1 = collapsed
   const headerProgress = useSharedValue(0);
   const headerHeight = useSharedValue(0);
+  const targetState = useSharedValue<'expanded' | 'collapsed' | null>(null);
+  const hasSnappedThisGesture = useSharedValue(false);
 
   const [measuredHeight, setMeasuredHeight] = useState(0);
 
@@ -99,20 +101,52 @@ export default function HeaderScrollLayout({
   const snapHeader = (force?: 'collapse' | 'expand') => {
     'worklet';
     const h = headerHeight.value;
-    if (h <= 0) return;
+    if (h <= 0) {
+      console.log('[snapHeader] Header height is 0, skipping');
+      return;
+    }
 
     let target: number;
-    if (force === 'collapse') target = 1;
-    else if (force === 'expand') target = 0;
-    else target = headerProgress.value < 0.5 ? 0 : 1;
+    let targetStateName: 'expanded' | 'collapsed';
+    
+    if (force === 'collapse') {
+      target = 1;
+      targetStateName = 'collapsed';
+    } else if (force === 'expand') {
+      target = 0;
+      targetStateName = 'expanded';
+    } else {
+      target = headerProgress.value < 0.5 ? 0 : 1;
+      targetStateName = target === 0 ? 'expanded' : 'collapsed';
+    }
 
-    headerProgress.value = withTiming(target, { duration: 250 });
+    // Skip if already animating to this target
+    if (targetState.value === targetStateName) {
+      console.log('[snapHeader] Already animating to', targetStateName, ', skipping');
+      return;
+    }
+
+    console.log('[snapHeader] Force:', force, 'Current:', headerProgress.value, 'Target:', target, 'State:', targetStateName);
+    targetState.value = targetStateName;
+    headerProgress.value = withTiming(target, { 
+      duration: 250 
+    }, (finished) => {
+      'worklet';
+      if (finished) {
+        // Animation completed, reset target state
+        targetState.value = null;
+        console.log('[snapHeader] Animation finished, targetState reset');
+      }
+    });
   };
 
   const onScroll = useAnimatedScrollHandler({
     onBeginDrag: (event) => {
+      console.log('[onBeginDrag] Starting drag at Y:', event.contentOffset.y);
       lastContentOffsetY.value = event.contentOffset.y;
       dragDeltaY.value = 0;
+      hasSnappedThisGesture.value = false;
+      console.log('[onBeginDrag] Reset hasSnappedThisGesture');
     },
     onScroll: (event) => {
       const h = headerHeight.value;
@@ -127,33 +161,36 @@ export default function HeaderScrollLayout({
       lastContentOffsetY.value = currentY;
       dragDeltaY.value += dy;
 
-      // Scroll down: collapse
-      if (dy > 0 && headerProgress.value < 1) {
-        const remainingCollapse = (1 - headerProgress.value) * h;
-        const headerDy = Math.min(dy, remainingCollapse);
-        if (headerDy > 0) {
-          headerProgress.value += headerDy / h;
-        }
+      console.log('[onScroll] dy:', dy.toFixed(2), 'currentY:', currentY.toFixed(2), 'headerProgress:', headerProgress.value.toFixed(3), 'dragDelta:', dragDeltaY.value.toFixed(2), 'hasSnapped:', hasSnappedThisGesture.value);
+
+      // Only allow one snap per gesture
+      if (hasSnappedThisGesture.value) {
+        return;
       }
 
-      // Scroll up: expand
-      if (dy < 0 && headerProgress.value > 0) {
-        const remainingExpand = headerProgress.value * h;
-        const headerDy = Math.max(dy, -remainingExpand); // dy negative
-        if (headerDy !== 0) {
-          headerProgress.value += headerDy / h;
-        }
+      // Scroll down: snap to collapsed (check cumulative dragDelta)
+      if (dragDeltaY.value > collapseThreshold) {
+        console.log('[onScroll] ⬇️ Scroll down detected, triggering collapse. dragDelta:', dragDeltaY.value.toFixed(2), 'threshold:', collapseThreshold);
+        snapHeader('collapse');
+        hasSnappedThisGesture.value = true;
+      }
+
+      // Scroll up: snap to expanded (check cumulative dragDelta)
+      if (dragDeltaY.value < -expandThreshold) {
+        console.log('[onScroll] ⬆️ Scroll up detected, triggering expand. dragDelta:', dragDeltaY.value.toFixed(2), 'threshold:', -expandThreshold);
+        snapHeader('expand');
+        hasSnappedThisGesture.value = true;
       }
     },
     onEndDrag: () => {
-      const delta = dragDeltaY.value;
-      if (delta > collapseThreshold) snapHeader('collapse');
-      else if (delta < -expandThreshold) snapHeader('expand');
-      else snapHeader();
+      console.log('[onEndDrag] Drag ended. Total dragDelta:', dragDeltaY.value.toFixed(2), 'headerProgress:', headerProgress.value.toFixed(3));
+      // No additional snapping needed since we snap during scroll
     },
     onMomentumEnd: (event) => {
       const y = event.contentOffset.y;
+      console.log('[onMomentumEnd] Momentum ended at Y:', y.toFixed(2), 'headerProgress:', headerProgress.value.toFixed(3));
       if (y <= TOP_EPSILON && headerProgress.value < 1) {
+        console.log('[onMomentumEnd] At top, expanding header');
         snapHeader('expand');
       }
     },
